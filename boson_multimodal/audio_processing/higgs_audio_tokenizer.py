@@ -308,9 +308,20 @@ class HiggsAudioTokenizer(nn.Module):
 
 
 def load_higgs_audio_tokenizer(tokenizer_name_or_path, device="cuda"):
-    is_local = os.path.exists(tokenizer_name_or_path)
-    if not is_local:
-        tokenizer_path = snapshot_download(tokenizer_name_or_path)
+    # Convert to absolute path if it's a relative path
+    if not os.path.isabs(tokenizer_name_or_path):
+        # First check if the path is relative to current directory
+        abs_path = os.path.abspath(tokenizer_name_or_path)
+        if os.path.exists(abs_path):
+            tokenizer_path = abs_path
+        else:
+            # Check if it's a HF model ID
+            try:
+                tokenizer_path = snapshot_download(tokenizer_name_or_path)
+            except Exception as e:
+                print(f"Error loading tokenizer: {e}")
+                print(f"Trying to use as local path: {tokenizer_name_or_path}")
+                tokenizer_path = tokenizer_name_or_path
     else:
         tokenizer_path = tokenizer_name_or_path
     config_path = os.path.join(tokenizer_path, "config.json")
