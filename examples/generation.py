@@ -12,7 +12,6 @@ import tqdm
 import yaml
 
 from loguru import logger
-import os
 from boson_multimodal.serve.serve_engine import HiggsAudioServeEngine, HiggsAudioResponse
 from boson_multimodal.data_types import Message, ChatMLSample, AudioContent, TextContent
 
@@ -189,7 +188,8 @@ class HiggsAudioModelClient:
     ):
         # Use explicit device if provided, otherwise try CUDA/MPS/CPU
         if device_id is not None:
-            self._device = f"cuda:{device_id}"
+            device = f"cuda:{device_id}"
+            self._device = device
         else:
             if device is not None:
                 self._device = device
@@ -210,36 +210,17 @@ class HiggsAudioModelClient:
         else:
             self._audio_tokenizer = audio_tokenizer
 
-        # Convert to absolute path if it's a relative path
-        if not os.path.isabs(model_path):
-            model_abs_path = os.path.abspath(model_path)
-            if os.path.exists(model_abs_path):
-                model_path = model_abs_path
-        
-        logger.info(f"Loading model from {model_path}")
-        try:
-            self._model = HiggsAudioModel.from_pretrained(
-                model_path,
-                device_map=self._device,
-                torch_dtype=torch.bfloat16,
-            )
-        except Exception as e:
-            logger.error(f"Error loading model: {e}")
-            raise
+        self._model = HiggsAudioModel.from_pretrained(
+            model_path,
+            device_map=self._device,
+            torch_dtype=torch.bfloat16,
+        )
         self._model.eval()
         self._kv_cache_lengths = kv_cache_lengths
         self._use_static_kv_cache = use_static_kv_cache
 
-        try:
-            self._tokenizer = AutoTokenizer.from_pretrained(model_path)
-        except Exception as e:
-            logger.error(f"Error loading tokenizer: {e}")
-            raise
-        try:
-            self._config = AutoConfig.from_pretrained(model_path)
-        except Exception as e:
-            logger.error(f"Error loading config: {e}")
-            raise
+        self._tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self._config = AutoConfig.from_pretrained(model_path)
         self._max_new_tokens = max_new_tokens
         self._collator = HiggsAudioSampleCollator(
             whisper_processor=None,
@@ -392,12 +373,13 @@ class HiggsAudioModelClient:
         logger.info(self._tokenizer.decode(outputs[0][0]))
         concat_audio_out_ids = torch.concat(audio_out_ids_l, dim=1)
 
-        # Fix MPS/CUDA compatibility: detach and move to same device as audio tokenizer before decoding
-        concat_audio_out_ids = concat_audio_out_ids.detach()
-        if concat_audio_out_ids.device != self._audio_tokenizer.device:
-            concat_audio_out_ids = concat_audio_out_ids.to(self._audio_tokenizer.device)
+        # Fix MPS compatibility: detach and move to CPU before decoding
+        if concat_audio_out_ids.device.type in ["mps", "cuda"]:
+            concat_audio_out_ids_cpu = concat_audio_out_ids.detach().cpu()
+        else:
+            concat_audio_out_ids_cpu = concat_audio_out_ids
 
-        concat_wv = self._audio_tokenizer.decode(concat_audio_out_ids.unsqueeze(0))[0, 0]
+        concat_wv = self._audio_tokenizer.decode(concat_audio_out_ids_cpu.unsqueeze(0))[0, 0]
         text_result = self._tokenizer.decode(outputs[0][0])
         return concat_wv, sr, text_result
 
@@ -516,13 +498,13 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
 @click.option(
     "--model_path",
     type=str,
-    default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models/higgs-audio-v2-generation-3B-base"),
-    help="Model path for generation.",
+    default="bosonai/higgs-audio-v2-generation-3B-base",
+    help="Output wav file path.",
 )
 @click.option(
     "--audio_tokenizer",
     type=str,
-    default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models/higgs-audio-v2-tokenizer"),
+    default="bosonai/higgs-audio-v2-tokenizer",
     help="Audio tokenizer path, if not set, use the default one.",
 )
 @click.option(
@@ -726,7 +708,7 @@ def main(
 
     for tag, replacement in [
         ("[laugh]", "<SE>[Laughter]</SE>"),
-        ("[humming start]", "<SE>[Humming]</SE>"),
+        ("[humming start]", "<SE_s>[Humming]</SE_s>"),
         ("[humming end]", "<SE_e>[Humming]</SE_e>"),
         ("[music start]", "<SE_s>[Music]</SE_s>"),
         ("[music end]", "<SE_e>[Music]</SE_e>"),
