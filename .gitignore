@@ -200,4 +200,4 @@ result/
 # Ruff
 .ruff_cache/
 
-.idea
+.idea/
