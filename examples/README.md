@@ -3,6 +3,67 @@
 > [!NOTE]  
 > If you do not like the audio you get, you can generate multiple times with different seeds. In addition, you may need to apply text normalization to get the best performance, e.g. converting 70 °F to "seventy degrees Fahrenheit", and converting "1 2 3 4" to "one two three four". The model also performs better in longer sentences. Right now, the model has not been post-trained, we will release the post-trained model in the future.
 
+## generation.py 用法与参数
+
+> 本节介绍 `examples/generation.py` 的命令行用法与全部参数说明。
+
+### 基本用法
+
+```bash
+python3 generation.py [OPTIONS]
+# Windows PowerShell
+python .\generation.py [OPTIONS]
+```
+
+常见最小示例：
+
+```bash
+# 随机音色朗读英文
+python3 generation.py \
+  --transcript transcript/single_speaker/en_dl.txt \
+  --out_path generation.wav
+
+# 克隆指定音色朗读
+python3 generation.py \
+  --transcript transcript/single_speaker/en_dl.txt \
+  --ref_audio belinda \
+  --seed 12345 \
+  --out_path generation.wav
+```
+
+### 参数说明（含默认值）
+
+- **--model_path (str, 默认: `bosonai/higgs-audio-v2-generation-3B-base`)**: 模型路径或名称（Hugging Face）。
+- **--audio_tokenizer (str, 默认: `bosonai/higgs-audio-v2-tokenizer`)**: 音频分词器路径或名称。
+- **--max_new_tokens (int, 默认: 2048)**: 生成的最大新 token 数（影响最大时长）。
+- **--transcript (str, 默认: `transcript/single_speaker/en_dl.txt`)**: 文本路径或直接文本；若该路径存在则读取文件内容。
+- **--scene_prompt (str, 默认: `scene_prompts/quiet_indoor.txt`)**: 场景描述提示词；设为 `empty` 或不存在则为空。
+- **--temperature (float, 默认: 1.0)**: 采样温度（低=稳定，高=多样）。
+- **--top_k (int, 默认: 50)**: Top-K 采样阈值。
+- **--top_p (float, 默认: 0.95)**: Top-P（核采样）阈值。
+- **--ras_win_len (int, 默认: 7)**: RAS 采样窗口长度；≤0 则禁用 RAS。
+- **--ras_win_max_num_repeat (int, 默认: 2)**: RAS 窗口最大重复次数（仅在启用 RAS 时有效）。
+- **--ref_audio (str, 默认: None)**: 参考音色；可用 `voice_prompts` 下基名（如 `belinda`），或多音色 `a,b` 对应 `SPEAKER0/1`；也支持 `profile:<name>` 从 `voice_prompts/profile.yaml` 以文字特征设定音色。
+- **--ref_audio_in_system_message (flag, 默认: False)**: 是否将参考音色描述放入系统消息（多说话人/占位更方便）。
+- **--chunk_method (None|speaker|word, 默认: None)**: 文本分段策略：
+  - None：整段一次生成；
+  - speaker：按 `[SPEAKER*]` 轮次切分；
+  - word：按词数/字数切分（中文按字、英文按空格）。
+- **--chunk_max_word_num (int, 默认: 200)**: `word` 分段时，单段最大词/字数。
+- **--chunk_max_num_turns (int, 默认: 1)**: `speaker` 分段时，合并的轮次数。
+- **--generation_chunk_buffer_size (int, 默认: None)**: 生成时上下文保留的最近音频段数（除参考音频外），提升长文连贯性；建议 2–4。
+- **--seed (int, 默认: None)**: 随机种子（固定可复现）。
+- **--device_id (int, 默认: None)**: 指定 CUDA 设备号（隐含使用 GPU）。
+- **--device (auto|cuda|mps|none, 默认: auto)**: 设备选择：auto 优先 CUDA→MPS→CPU；`none` 为 CPU。指定 `device_id` 时强制 CUDA。
+- **--use_static_kv_cache (int, 默认: 1)**: 开启静态 KV cache 与 CUDA Graphs 加速（仅 GPU；MPS 自动禁用）。
+- **--out_path (str, 默认: `generation.wav`)**: 输出 wav 路径（采样率 24kHz）。
+
+### 小贴士
+
+- 文本会进行基础规范化：中英标点统一、去多余空白、替换若干标签（如 `[laugh] → <SE>[Laughter]</SE>`）。
+- 多说话人：脚本会读取文本中的 `[SPEAKER0]`、`[SPEAKER1]` 标签；若未显式给参考音色且存在 2+ 说话人，会在系统消息中交替分派“feminine/masculine”提示。
+- 稳定性 vs 多样性：追求稳定可用 `--temperature 0.3 --ras_win_len 0`；追求多样可提高 temperature/top_p。
+
 ## Single-speaker Audio Generation
 
 ### Voice clone
