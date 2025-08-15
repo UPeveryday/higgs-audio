@@ -471,6 +471,413 @@ def ui_app():
                             outputs=[audio_out_audio, text_out_audio],
                         )
 
+            # 长格式音频的分块功能模块
+            with gr.Tab("长文本/分块生成"):
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=5):
+                        txt_input_long = gr.Textbox(
+                            label="Transcript",
+                            value=_read_text_file(os.path.join(CURR_DIR, "transcript", "single_speaker", "en_higgs_audio_blog.md"))
+                            or default_text,
+                            lines=8,
+                        )
+                        # Scene Prompt 单独一行
+                        scene_prompt_long = gr.Textbox(
+                            label="Scene Prompt (optional)",
+                            value=_read_text_file(os.path.join(CURR_DIR, "scene_prompts", "reading_blog.txt")) or "",
+                            lines=1,
+                        )
+                        with gr.Row():
+                            ref_audio_long = gr.Dropdown(
+                                choices=[None] + audio_names + profile_names,
+                                value=None,
+                                label="参考音色 (可选)",
+                            )
+                            ref_in_sys_long = gr.Checkbox(value=False, label="将参考音色放入系统消息")
+                        with gr.Row():
+                            chunk_method_long = gr.Dropdown(
+                                choices=[None, "speaker", "word"], value="word", label="分块方式"
+                            )
+                            chunk_max_word_num_long = gr.Number(value=200, label="每段最大词/字数 (word)")
+                            chunk_max_num_turns_long = gr.Number(value=1, label="每段合并轮次 (speaker)")
+                        generation_chunk_buffer_long = gr.Number(value=2, label="上下文保留生成段数 (可选)")
+                        # Seed 单独一行
+                        seed_long = gr.Number(value=12345, label="Seed (optional)")
+                        # 生成按钮单独一行且位于最下方
+                        generate_btn_long = gr.Button("Generate (Long-form)")
+                    with gr.Column(scale=2):
+                        audio_out_long = gr.Audio(label="Output Audio", type="numpy")
+                        text_out_long = gr.Textbox(label="Generated Text", lines=4)
+
+                def on_generate_longform(
+                    transcript,
+                    scene,
+                    ref_audio_sel,
+                    ref_in_sys,
+                    chunk_method,
+                    chunk_max_word_num,
+                    chunk_max_num_turns,
+                    generation_chunk_buffer,
+                    temperature,
+                    top_k,
+                    top_p,
+                    ras_win_len,
+                    ras_win_max_num_repeat,
+                    seed,
+                    model_path,
+                    audio_tokenizer,
+                    max_new_tokens,
+                    device,
+                    device_id,
+                    use_static_kv_cache,
+                ):
+                    sampling = dict(
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                        ras_win_len=ras_win_len,
+                        ras_win_max_num_repeat=ras_win_max_num_repeat,
+                        seed=seed,
+                    )
+                    model_cfg = dict(
+                        model_path=model_path,
+                        audio_tokenizer=audio_tokenizer,
+                        max_new_tokens=int(max_new_tokens),
+                        device=device,
+                        device_id=None if device_id in (None, "") else int(device_id),
+                        use_static_kv_cache=bool(use_static_kv_cache),
+                    )
+
+                    text = transcript or ""
+                    # 提取说话人标签并预处理文本
+                    pattern = re.compile(r"\[(SPEAKER\d+)\]")
+                    speaker_tags = sorted(set(pattern.findall(text)))
+                    text = _preprocess_transcript(text)
+                    scene_text = (scene or "").strip() or None
+
+                    client = MODEL_STATE.get_client(
+                        model_path=model_cfg["model_path"],
+                        audio_tokenizer_path=model_cfg["audio_tokenizer"],
+                        max_new_tokens=int(model_cfg["max_new_tokens"]),
+                        device_choice=model_cfg["device"],
+                        device_id=model_cfg["device_id"],
+                        use_static_kv_cache=bool(model_cfg["use_static_kv_cache"]),
+                    )
+
+                    messages, audio_ids = GENERATION.prepare_generation_context(
+                        scene_prompt=scene_text,
+                        ref_audio=ref_audio_sel if ref_audio_sel not in (None, "") else None,
+                        ref_audio_in_system_message=bool(ref_in_sys),
+                        audio_tokenizer=client._audio_tokenizer,
+                        speaker_tags=speaker_tags,
+                    )
+
+                    chunked_text = GENERATION.prepare_chunk_text(
+                        text,
+                        chunk_method=None if chunk_method in (None, "None", "") else chunk_method,
+                        chunk_max_word_num=int(chunk_max_word_num) if chunk_max_word_num not in (None, "") else 200,
+                        chunk_max_num_turns=int(chunk_max_num_turns) if chunk_max_num_turns not in (None, "") else 1,
+                    )
+
+                    gen_buf = (
+                        None if generation_chunk_buffer in (None, "") else int(generation_chunk_buffer)
+                    )
+
+                    concat_wv, sr, text_out = client.generate(
+                        messages=messages,
+                        audio_ids=audio_ids,
+                        chunked_text=chunked_text,
+                        generation_chunk_buffer_size=gen_buf,
+                        temperature=float(sampling["temperature"]),
+                        top_k=int(sampling["top_k"]),
+                        top_p=float(sampling["top_p"]),
+                        ras_win_len=int(sampling["ras_win_len"]),
+                        ras_win_max_num_repeat=int(sampling["ras_win_max_num_repeat"]),
+                        seed=None if sampling["seed"] in (None, "") else int(sampling["seed"]),
+                    )
+                    if hasattr(concat_wv, "detach"):
+                        arr = concat_wv.detach().cpu().numpy()
+                    else:
+                        import numpy as _np
+                        arr = _np.asarray(concat_wv)
+                    return (sr, arr), text_out
+
+                generate_btn_long.click(
+                    on_generate_longform,
+                    inputs=[
+                        txt_input_long,
+                        scene_prompt_long,
+                        ref_audio_long,
+                        ref_in_sys_long,
+                        chunk_method_long,
+                        chunk_max_word_num_long,
+                        chunk_max_num_turns_long,
+                        generation_chunk_buffer_long,
+                        temperature_g,
+                        top_k_g,
+                        top_p_g,
+                        ras_win_len_g,
+                        ras_win_max_num_repeat_g,
+                        seed_long,
+                        model_path,
+                        audio_tokenizer,
+                        max_new_tokens,
+                        device,
+                        device_id,
+                        use_static_kv_cache,
+                    ],
+                    outputs=[audio_out_long, text_out_long],
+                )
+
+            # 用克隆的声音哼一首曲子模块（实验）
+            with gr.Tab("哼一首曲子（克隆音色）"):
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=5):
+                        txt_input_hum = gr.Textbox(
+                            label="Transcript",
+                            value=_read_text_file(os.path.join(CURR_DIR, "transcript", "single_speaker", "experimental", "en_humming.txt"))
+                            or "Hum a tune with the cloned voice.",
+                            lines=3,
+                        )
+                        # Scene Prompt 单独一行
+                        scene_prompt_hum = gr.Textbox(label="Scene Prompt (optional)", value="", lines=1)
+                        with gr.Row():
+                            ref_audio_hum = gr.Dropdown(
+                                choices=audio_names,
+                                value="en_woman" if "en_woman" in audio_names else None,
+                                label="参考音色",
+                            )
+                            ras_win_len_hum = gr.Number(value=0, label="RAS Window Length (本模块默认 0)")
+                        # Seed 单独一行
+                        seed_hum = gr.Number(value=12345, label="Seed (optional)")
+                        # 生成按钮单独一行且位于最下方
+                        generate_btn_hum = gr.Button("Generate (Humming)")
+                    with gr.Column(scale=2):
+                        audio_out_hum = gr.Audio(label="Output Audio", type="numpy")
+                        text_out_hum = gr.Textbox(label="Generated Text", lines=2)
+
+                def on_generate_hum(
+                    transcript,
+                    scene,
+                    ref_audio_sel,
+                    ras_win_len_local,
+                    temperature,
+                    top_k,
+                    top_p,
+                    ras_win_max_num_repeat,
+                    seed,
+                    model_path,
+                    audio_tokenizer,
+                    max_new_tokens,
+                    device,
+                    device_id,
+                    use_static_kv_cache,
+                ):
+                    sampling = dict(
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                        ras_win_len=ras_win_len_local,
+                        ras_win_max_num_repeat=ras_win_max_num_repeat,
+                        seed=seed,
+                    )
+                    model_cfg = dict(
+                        model_path=model_path,
+                        audio_tokenizer=audio_tokenizer,
+                        max_new_tokens=int(max_new_tokens),
+                        device=device,
+                        device_id=None if device_id in (None, "") else int(device_id),
+                        use_static_kv_cache=bool(use_static_kv_cache),
+                    )
+
+                    text = transcript or ""
+                    text = _preprocess_transcript(text)
+                    scene_text = (scene or "").strip() or None
+
+                    client = MODEL_STATE.get_client(
+                        model_path=model_cfg["model_path"],
+                        audio_tokenizer_path=model_cfg["audio_tokenizer"],
+                        max_new_tokens=int(model_cfg["max_new_tokens"]),
+                        device_choice=model_cfg["device"],
+                        device_id=model_cfg["device_id"],
+                        use_static_kv_cache=bool(model_cfg["use_static_kv_cache"]),
+                    )
+                    # 单说话人场景，无需显式 speaker 标签
+                    messages, audio_ids = GENERATION.prepare_generation_context(
+                        scene_prompt=scene_text,
+                        ref_audio=ref_audio_sel,
+                        ref_audio_in_system_message=False,
+                        audio_tokenizer=client._audio_tokenizer,
+                        speaker_tags=[],
+                    )
+                    chunked_text = GENERATION.prepare_chunk_text(text, chunk_method=None)
+                    concat_wv, sr, text_out = client.generate(
+                        messages=messages,
+                        audio_ids=audio_ids,
+                        chunked_text=chunked_text,
+                        generation_chunk_buffer_size=None,
+                        temperature=float(sampling["temperature"]),
+                        top_k=int(sampling["top_k"]),
+                        top_p=float(sampling["top_p"]),
+                        ras_win_len=int(sampling["ras_win_len"]),
+                        ras_win_max_num_repeat=int(sampling["ras_win_max_num_repeat"]),
+                        seed=None if sampling["seed"] in (None, "") else int(sampling["seed"]),
+                    )
+                    if hasattr(concat_wv, "detach"):
+                        arr = concat_wv.detach().cpu().numpy()
+                    else:
+                        import numpy as _np
+                        arr = _np.asarray(concat_wv)
+                    return (sr, arr), text_out
+
+                generate_btn_hum.click(
+                    on_generate_hum,
+                    inputs=[
+                        txt_input_hum,
+                        scene_prompt_hum,
+                        ref_audio_hum,
+                        ras_win_len_hum,
+                        temperature_g,
+                        top_k_g,
+                        top_p_g,
+                        ras_win_max_num_repeat_g,
+                        seed_hum,
+                        model_path,
+                        audio_tokenizer,
+                        max_new_tokens,
+                        device,
+                        device_id,
+                        use_static_kv_cache,
+                    ],
+                    outputs=[audio_out_hum, text_out_hum],
+                )
+
+            # 阅读句子时添加背景音乐模块（实验）
+            with gr.Tab("阅读 + 背景音乐（实验）"):
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=5):
+                        txt_input_bgm = gr.Textbox(
+                            label="Transcript",
+                            value=_read_text_file(os.path.join(CURR_DIR, "transcript", "single_speaker", "experimental", "en_bgm.txt"))
+                            or "Read the sentence while adding background music.",
+                            lines=3,
+                        )
+                        # Scene Prompt 单独一行
+                        scene_prompt_bgm = gr.Textbox(label="Scene Prompt (optional)", value="", lines=1)
+                        with gr.Row():
+                            ref_audio_bgm = gr.Dropdown(
+                                choices=audio_names,
+                                value="en_woman" if "en_woman" in audio_names else None,
+                                label="参考音色",
+                            )
+                            ref_in_sys_bgm = gr.Checkbox(value=True, label="将参考音色放入系统消息 (默认开启)")
+                        # RAS 长度本模块默认 0
+                        ras_win_len_bgm = gr.Number(value=0, label="RAS Window Length (本模块默认 0)")
+                        # Seed 单独一行
+                        seed_bgm = gr.Number(value=123456, label="Seed (optional)")
+                        # 生成按钮单独一行且位于最下方
+                        generate_btn_bgm = gr.Button("Generate (BGM)")
+                    with gr.Column(scale=2):
+                        audio_out_bgm = gr.Audio(label="Output Audio", type="numpy")
+                        text_out_bgm = gr.Textbox(label="Generated Text", lines=2)
+
+                def on_generate_bgm(
+                    transcript,
+                    scene,
+                    ref_audio_sel,
+                    ref_in_sys,
+                    ras_win_len_local,
+                    temperature,
+                    top_k,
+                    top_p,
+                    ras_win_max_num_repeat,
+                    seed,
+                    model_path,
+                    audio_tokenizer,
+                    max_new_tokens,
+                    device,
+                    device_id,
+                    use_static_kv_cache,
+                ):
+                    sampling = dict(
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                        ras_win_len=ras_win_len_local,
+                        ras_win_max_num_repeat=ras_win_max_num_repeat,
+                        seed=seed,
+                    )
+                    model_cfg = dict(
+                        model_path=model_path,
+                        audio_tokenizer=audio_tokenizer,
+                        max_new_tokens=int(max_new_tokens),
+                        device=device,
+                        device_id=None if device_id in (None, "") else int(device_id),
+                        use_static_kv_cache=bool(use_static_kv_cache),
+                    )
+
+                    text = transcript or ""
+                    text = _preprocess_transcript(text)
+                    scene_text = (scene or "").strip() or None
+
+                    client = MODEL_STATE.get_client(
+                        model_path=model_cfg["model_path"],
+                        audio_tokenizer_path=model_cfg["audio_tokenizer"],
+                        max_new_tokens=int(model_cfg["max_new_tokens"]),
+                        device_choice=model_cfg["device"],
+                        device_id=model_cfg["device_id"],
+                        use_static_kv_cache=bool(model_cfg["use_static_kv_cache"]),
+                    )
+                    messages, audio_ids = GENERATION.prepare_generation_context(
+                        scene_prompt=scene_text,
+                        ref_audio=ref_audio_sel,
+                        ref_audio_in_system_message=bool(ref_in_sys),
+                        audio_tokenizer=client._audio_tokenizer,
+                        speaker_tags=[],
+                    )
+                    chunked_text = GENERATION.prepare_chunk_text(text, chunk_method=None)
+                    concat_wv, sr, text_out = client.generate(
+                        messages=messages,
+                        audio_ids=audio_ids,
+                        chunked_text=chunked_text,
+                        generation_chunk_buffer_size=None,
+                        temperature=float(sampling["temperature"]),
+                        top_k=int(sampling["top_k"]),
+                        top_p=float(sampling["top_p"]),
+                        ras_win_len=int(sampling["ras_win_len"]),
+                        ras_win_max_num_repeat=int(sampling["ras_win_max_num_repeat"]),
+                        seed=None if sampling["seed"] in (None, "") else int(sampling["seed"]),
+                    )
+                    if hasattr(concat_wv, "detach"):
+                        arr = concat_wv.detach().cpu().numpy()
+                    else:
+                        import numpy as _np
+                        arr = _np.asarray(concat_wv)
+                    return (sr, arr), text_out
+
+                generate_btn_bgm.click(
+                    on_generate_bgm,
+                    inputs=[
+                        txt_input_bgm,
+                        scene_prompt_bgm,
+                        ref_audio_bgm,
+                        ref_in_sys_bgm,
+                        ras_win_len_bgm,
+                        temperature_g,
+                        top_k_g,
+                        top_p_g,
+                        ras_win_max_num_repeat_g,
+                        seed_bgm,
+                        model_path,
+                        audio_tokenizer,
+                        max_new_tokens,
+                        device,
+                        device_id,
+                        use_static_kv_cache,
+                    ],
+                    outputs=[audio_out_bgm, text_out_bgm],
+                )
+
     return demo
 
 
