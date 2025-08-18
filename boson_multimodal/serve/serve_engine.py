@@ -6,7 +6,7 @@ from io import BytesIO
 from dataclasses import dataclass
 from typing import List, Optional, Union
 from copy import deepcopy
-from transformers import AutoTokenizer, AutoProcessor
+from transformers import AutoTokenizer, AutoProcessor, BitsAndBytesConfig
 from transformers.cache_utils import StaticCache
 from transformers.generation.streamers import BaseStreamer
 from transformers.generation.stopping_criteria import StoppingCriteria
@@ -15,12 +15,18 @@ from loguru import logger
 import threading
 import librosa
 
-
 from ..dataset.chatml_dataset import ChatMLSample, ChatMLDatasetSample, prepare_chatml_sample
 from ..model.higgs_audio import HiggsAudioModel
 from ..model.higgs_audio.utils import revert_delay_pattern
 from ..data_collator.higgs_audio_collator import HiggsAudioSampleCollator
 from ..audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
+
+BNB_CONF = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16
+)
 
 
 @dataclass
@@ -74,12 +80,12 @@ class AsyncHiggsAudioStreamer(BaseStreamer):
     """
 
     def __init__(
-        self,
-        tokenizer: "AutoTokenizer",
-        skip_prompt: bool = False,
-        timeout: Optional[float] = None,
-        audio_num_codebooks: int = 1,
-        **decode_kwargs,
+            self,
+            tokenizer: "AutoTokenizer",
+            skip_prompt: bool = False,
+            timeout: Optional[float] = None,
+            audio_num_codebooks: int = 1,
+            **decode_kwargs,
     ):
         self.tokenizer = tokenizer
         self.skip_prompt = skip_prompt
@@ -180,13 +186,14 @@ class HiggsAudioResponse:
 
 class HiggsAudioServeEngine:
     def __init__(
-        self,
-        model_name_or_path: str,
-        audio_tokenizer_name_or_path: str,
-        tokenizer_name_or_path: Optional[str] = None,
-        device: str = "cuda",
-        torch_dtype: Union[torch.dtype, str] = "auto",
-        kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes
+            self,
+            model_name_or_path: str,
+            audio_tokenizer_name_or_path: str,
+            tokenizer_name_or_path: Optional[str] = None,
+            device: str = "cuda",
+            torch_dtype: Union[torch.dtype, str] = "auto",
+            kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes
+            quantization=True,
     ):
         """
         Initialize the HiggsAudioServeEngine, a serving wrapper for the HiggsAudioModel.
@@ -209,9 +216,12 @@ class HiggsAudioServeEngine:
         self.device = device
         self.model_name_or_path = model_name_or_path
         self.torch_dtype = torch_dtype
-
         # Initialize model and tokenizer
-        self.model = HiggsAudioModel.from_pretrained(model_name_or_path, torch_dtype=torch_dtype).to(device)
+        if quantization:
+            self.model = HiggsAudioModel.from_pretrained(model_name_or_path, quantization_config=BNB_CONF,
+                                                         torch_dtype=torch_dtype).to(device)
+        else:
+            self.model = HiggsAudioModel.from_pretrained(model_name_or_path, torch_dtype=torch_dtype).to(device)
         logger.info(f"Loaded model from {model_name_or_path}, dtype: {self.model.dtype}")
 
         if tokenizer_name_or_path is None:
@@ -339,17 +349,17 @@ class HiggsAudioServeEngine:
             kv_cache.reset()
 
     def generate(
-        self,
-        chat_ml_sample: ChatMLSample,
-        max_new_tokens: int,
-        temperature: float = 0.7,
-        top_k: Optional[int] = None,
-        top_p: float = 0.95,
-        stop_strings: Optional[List[str]] = None,
-        force_audio_gen: bool = False,
-        ras_win_len: Optional[int] = 7,
-        ras_win_max_num_repeat: int = 2,
-        seed: Optional[int] = None,
+            self,
+            chat_ml_sample: ChatMLSample,
+            max_new_tokens: int,
+            temperature: float = 0.7,
+            top_k: Optional[int] = None,
+            top_p: float = 0.95,
+            stop_strings: Optional[List[str]] = None,
+            force_audio_gen: bool = False,
+            ras_win_len: Optional[int] = 7,
+            ras_win_max_num_repeat: int = 2,
+            seed: Optional[int] = None,
     ):
         """
         Generate audio from a chatml sample.
@@ -406,7 +416,7 @@ class HiggsAudioServeEngine:
                 wv_numpy = None
 
             # We only support one request at a time now
-            generated_text_tokens = outputs[0][0].cpu().numpy()[len(prompt_token_ids) :]
+            generated_text_tokens = outputs[0][0].cpu().numpy()[len(prompt_token_ids):]
             generated_text = self.tokenizer.decode(generated_text_tokens)
             generated_audio_tokens = outputs[1][0].cpu().numpy()
             return HiggsAudioResponse(
@@ -419,24 +429,24 @@ class HiggsAudioServeEngine:
                     "prompt_tokens": prompt_token_ids.shape[0],
                     "completion_tokens": generated_text_tokens.shape[0] + generated_audio_tokens.shape[1],
                     "total_tokens": (
-                        prompt_token_ids.shape[0] + generated_text_tokens.shape[0] + generated_audio_tokens.shape[1]
+                            prompt_token_ids.shape[0] + generated_text_tokens.shape[0] + generated_audio_tokens.shape[1]
                     ),
                     "cached_tokens": 0,
                 },
             )
 
     async def generate_delta_stream(
-        self,
-        chat_ml_sample: ChatMLSample,
-        max_new_tokens: int,
-        temperature: float = 0.7,
-        top_k: Optional[int] = None,
-        top_p: float = 0.95,
-        stop_strings: Optional[List[str]] = None,
-        force_audio_gen: bool = False,
-        ras_win_len: Optional[int] = 7,
-        ras_win_max_num_repeat: int = 2,
-        seed: Optional[int] = None,
+            self,
+            chat_ml_sample: ChatMLSample,
+            max_new_tokens: int,
+            temperature: float = 0.7,
+            top_k: Optional[int] = None,
+            top_p: float = 0.95,
+            stop_strings: Optional[List[str]] = None,
+            force_audio_gen: bool = False,
+            ras_win_len: Optional[int] = 7,
+            ras_win_max_num_repeat: int = 2,
+            seed: Optional[int] = None,
     ):
         """
         Generate audio from a chatml sample.

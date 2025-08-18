@@ -20,3 +20,4 @@ langid
 jieba
 accelerate>=0.26.0
 gradio
+bitsandbytes

@@ -24,7 +24,7 @@ from boson_multimodal.dataset.chatml_dataset import (
 )
 from boson_multimodal.model.higgs_audio.utils import revert_delay_pattern
 from typing import List
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer, BitsAndBytesConfig
 from transformers.cache_utils import StaticCache
 from typing import Optional
 from dataclasses import asdict
@@ -32,9 +32,15 @@ import torch
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
+BNB_CONF = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16
+)
+
 
 AUDIO_PLACEHOLDER_TOKEN = "<|__AUDIO_PLACEHOLDER__|>"
-
 
 MULTISPEAKER_DEFAULT_SYSTEM_MESSAGE = """You are an AI assistant designed to convert text into speech.
 If the user's message includes a [SPEAKER*] tag, do not read out the tag and generate speech for the following text, using the specified voice.
@@ -81,7 +87,7 @@ def normalize_chinese_punctuation(text):
 
 
 def prepare_chunk_text(
-    text, chunk_method: Optional[str] = None, chunk_max_word_num: int = 100, chunk_max_num_turns: int = 1
+        text, chunk_method: Optional[str] = None, chunk_max_word_num: int = 100, chunk_max_num_turns: int = 1
 ):
     """Chunk the text into smaller pieces. We will later feed the chunks one by one to the model.
 
@@ -128,7 +134,7 @@ def prepare_chunk_text(
         if chunk_max_num_turns > 1:
             merged_chunks = []
             for i in range(0, len(speaker_chunks), chunk_max_num_turns):
-                merged_chunk = "\n".join(speaker_chunks[i : i + chunk_max_num_turns])
+                merged_chunk = "\n".join(speaker_chunks[i: i + chunk_max_num_turns])
                 merged_chunks.append(merged_chunk)
             return merged_chunks
         return speaker_chunks
@@ -144,12 +150,12 @@ def prepare_chunk_text(
                 # For Chinese, we will chunk based on character count
                 words = list(jieba.cut(paragraph, cut_all=False))
                 for i in range(0, len(words), chunk_max_word_num):
-                    chunk = "".join(words[i : i + chunk_max_word_num])
+                    chunk = "".join(words[i: i + chunk_max_word_num])
                     chunks.append(chunk)
             else:
                 words = paragraph.split(" ")
                 for i in range(0, len(words), chunk_max_word_num):
-                    chunk = " ".join(words[i : i + chunk_max_word_num])
+                    chunk = " ".join(words[i: i + chunk_max_word_num])
                     chunks.append(chunk)
             chunks[-1] += "\n\n"
         return chunks
@@ -164,7 +170,7 @@ def _build_system_message_with_audio_prompt(system_message):
         loc = system_message.find(AUDIO_PLACEHOLDER_TOKEN)
         contents.append(TextContent(system_message[:loc]))
         contents.append(AudioContent(audio_url=""))
-        system_message = system_message[loc + len(AUDIO_PLACEHOLDER_TOKEN) :]
+        system_message = system_message[loc + len(AUDIO_PLACEHOLDER_TOKEN):]
 
     if len(system_message) > 0:
         contents.append(TextContent(system_message))
@@ -177,14 +183,14 @@ def _build_system_message_with_audio_prompt(system_message):
 
 class HiggsAudioModelClient:
     def __init__(
-        self,
-        model_path,
-        audio_tokenizer,
-        device=None,
-        device_id=None,
-        max_new_tokens=2048,
-        kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes,
-        use_static_kv_cache=False,
+            self,
+            model_path,
+            audio_tokenizer,
+            device=None,
+            device_id=None,
+            max_new_tokens=2048,
+            kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes,
+            use_static_kv_cache=False,
     ):
         # Use explicit device if provided, otherwise try CUDA/MPS/CPU
         if device_id is not None:
@@ -212,6 +218,7 @@ class HiggsAudioModelClient:
 
         self._model = HiggsAudioModel.from_pretrained(
             model_path,
+            quantization_config=BNB_CONF,
             device_map=self._device,
             torch_dtype=torch.bfloat16,
         )
@@ -266,19 +273,19 @@ class HiggsAudioModelClient:
 
     @torch.inference_mode()
     def generate(
-        self,
-        messages,
-        audio_ids,
-        chunked_text,
-        generation_chunk_buffer_size,
-        temperature=1.0,
-        top_k=50,
-        top_p=0.95,
-        ras_win_len=7,
-        ras_win_max_num_repeat=2,
-        seed=123,
-        *args,
-        **kwargs,
+            self,
+            messages,
+            audio_ids,
+            chunked_text,
+            generation_chunk_buffer_size,
+            temperature=1.0,
+            top_k=50,
+            top_p=0.95,
+            ras_win_len=7,
+            ras_win_max_num_repeat=2,
+            seed=123,
+            *args,
+            **kwargs,
     ):
         if ras_win_len is not None and ras_win_len <= 0:
             ras_win_len = None
@@ -287,7 +294,7 @@ class HiggsAudioModelClient:
         generated_audio_ids = []
         generation_messages = []
         for idx, chunk_text in tqdm.tqdm(
-            enumerate(chunked_text), desc="Generating audio chunks", total=len(chunked_text)
+                enumerate(chunked_text), desc="Generating audio chunks", total=len(chunked_text)
         ):
             generation_messages.append(
                 Message(
@@ -367,7 +374,7 @@ class HiggsAudioModelClient:
             )
             if generation_chunk_buffer_size is not None and len(generated_audio_ids) > generation_chunk_buffer_size:
                 generated_audio_ids = generated_audio_ids[-generation_chunk_buffer_size:]
-                generation_messages = generation_messages[(-2 * generation_chunk_buffer_size) :]
+                generation_messages = generation_messages[(-2 * generation_chunk_buffer_size):]
 
         logger.info(f"========= Final Text output =========")
         logger.info(self._tokenizer.decode(outputs[0][0]))
@@ -405,22 +412,22 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
                     if voice_profile is None:
                         with open(f"{CURR_DIR}/voice_prompts/profile.yaml", "r", encoding="utf-8") as f:
                             voice_profile = yaml.safe_load(f)
-                    character_desc = voice_profile["profiles"][character_name[len("profile:") :].strip()]
+                    character_desc = voice_profile["profiles"][character_name[len("profile:"):].strip()]
                     speaker_desc.append(f"SPEAKER{spk_id}: {character_desc}")
                 else:
                     speaker_desc.append(f"SPEAKER{spk_id}: {AUDIO_PLACEHOLDER_TOKEN}")
             if scene_prompt:
                 system_message = (
-                    "Generate audio following instruction."
-                    "\n\n"
-                    f"<|scene_desc_start|>\n{scene_prompt}\n\n" + "\n".join(speaker_desc) + "\n<|scene_desc_end|>"
+                        "Generate audio following instruction."
+                        "\n\n"
+                        f"<|scene_desc_start|>\n{scene_prompt}\n\n" + "\n".join(speaker_desc) + "\n<|scene_desc_end|>"
                 )
             else:
                 system_message = (
-                    "Generate audio following instruction.\n\n"
-                    + f"<|scene_desc_start|>\n"
-                    + "\n".join(speaker_desc)
-                    + "\n<|scene_desc_end|>"
+                        "Generate audio following instruction.\n\n"
+                        + f"<|scene_desc_start|>\n"
+                        + "\n".join(speaker_desc)
+                        + "\n<|scene_desc_end|>"
                 )
             system_message = _build_system_message_with_audio_prompt(system_message)
         else:
@@ -560,7 +567,7 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
     type=str,
     default=None,
     help="The voice prompt to use for generation. If not set, we will let the model randomly pick a voice. "
-    "For multi-speaker generation, you can specify the prompts as `belinda,chadwick` and we will use the voice of belinda as SPEAKER0 and the voice of chadwick as SPEAKER1.",
+         "For multi-speaker generation, you can specify the prompts as `belinda,chadwick` and we will use the voice of belinda as SPEAKER0 and the voice of chadwick as SPEAKER1.",
 )
 @click.option(
     "--ref_audio_in_system_message",
@@ -623,27 +630,27 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
     help="Device to use: 'auto' (pick best available), 'cuda', 'mps', or 'none' (CPU only).",
 )
 def main(
-    model_path,
-    audio_tokenizer,
-    max_new_tokens,
-    transcript,
-    scene_prompt,
-    temperature,
-    top_k,
-    top_p,
-    ras_win_len,
-    ras_win_max_num_repeat,
-    ref_audio,
-    ref_audio_in_system_message,
-    chunk_method,
-    chunk_max_word_num,
-    chunk_max_num_turns,
-    generation_chunk_buffer_size,
-    seed,
-    device_id,
-    out_path,
-    use_static_kv_cache,
-    device,
+        model_path,
+        audio_tokenizer,
+        max_new_tokens,
+        transcript,
+        scene_prompt,
+        temperature,
+        top_k,
+        top_p,
+        ras_win_len,
+        ras_win_max_num_repeat,
+        ref_audio,
+        ref_audio_in_system_message,
+        chunk_method,
+        chunk_max_word_num,
+        chunk_max_num_turns,
+        generation_chunk_buffer_size,
+        seed,
+        device_id,
+        out_path,
+        use_static_kv_cache,
+        device,
 ):
     # specifying a device_id implies CUDA
     if device_id is None:
